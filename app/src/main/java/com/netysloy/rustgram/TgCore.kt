@@ -1,9 +1,9 @@
 package com.netysloy.rustgram
 
 object TgCore {
-    // ВСТАВЬ СВОИ КЛЮЧИ из https://my.telegram.org (API development tools)
-    const val API_ID = 1234567             // замени
-    const val API_HASH = "вставь_свой_api_hash"  // замени
+    // Ключи приложения nordlink с https://my.telegram.org
+    const val API_ID = 27367222
+    const val API_HASH = "9cf9adcd1c63897798a147fe06c319ff"
 
     init { System.loadLibrary("core") }
 
