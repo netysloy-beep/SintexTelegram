@@ -10,5 +10,6 @@ object TgCore {
     external fun init(apiId: Int, apiHash: String)
     external fun login(phone: String, code: String): String
     external fun lookup(target: String): String
+    external fun setAutoReply(text: String)
     external fun startArchive()
 }

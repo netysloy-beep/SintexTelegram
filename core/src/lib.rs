@@ -3,11 +3,14 @@ use grammers_session::Session;
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jstring};
 use jni::JNIEnv;
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 static mut API_ID: i32 = 0;
 static mut API_HASH: String = String::new();
 static CLIENT: OnceLock<Client> = OnceLock::new();
+static AUTO_REPLY: Mutex<Option<String>> = Mutex::new(None);
+static REPLIED: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
@@ -74,6 +77,16 @@ pub extern "system" fn Java_com_netysloy_rustgram_TgCore_lookup(
         .unwrap().into_raw()
 }
 
+/// Включить/выключить автоответчик. Пустая строка = выключен.
+#[no_mangle]
+pub extern "system" fn Java_com_netysloy_rustgram_TgCore_setAutoReply(
+    env: JNIEnv, _c: JClass, text: JString,
+) {
+    let text = env.get_string(&text).unwrap().to_string_lossy().into_owned();
+    let mut slot = AUTO_REPLY.lock().unwrap();
+    if text.is_empty() { *slot = None; } else { *slot = Some(text); }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_netysloy_rustgram_TgCore_startArchive(_env: JNIEnv, _c: JClass) {
     std::thread::spawn(|| {
@@ -83,21 +96,46 @@ pub extern "system" fn Java_com_netysloy_rustgram_TgCore_startArchive(_env: JNIE
             loop {
                 let (updates, _) = client.next_update_batch().await.unwrap();
                 for u in updates {
-                    let line = match u {
-                        Update::NewMessage(m) => format!(
-                            "[СОХРАНЕНО] {} | {} | {}\n",
-                            m.date(), m.chat().name().unwrap_or_default(), m.text().unwrap_or_default()
-                        ),
-                        Update::DeletedMessages(d) => format!("[УДАЛЕНО] {:?}\n", d.messages),
-                        _ => continue,
-                    };
-                    tokio::fs::OpenOptions::new()
-                        .create(true).append(true)
-                        .open("archive.log").await
-                        .and_then(|mut f| {
-                            use tokio::io::AsyncWriteExt;
-                            Ok(f.write_all(line.as_bytes()).await?)
-                        }).ok();
+                    match u {
+                        Update::NewMessage(m) => {
+                            // архив: сохраняем каждое входящее
+                            let line = format!(
+                                "[СОХРАНЕНО] {} | {} | {}\n",
+                                m.date(), m.chat().name().unwrap_or_default(), m.text().unwrap_or_default()
+                            );
+                            tokio::fs::OpenOptions::new()
+                                .create(true).append(true)
+                                .open("archive.log").await
+                                .and_then(|mut f| {
+                                    use tokio::io::AsyncWriteExt;
+                                    Ok(f.write_all(line.as_bytes()).await?)
+                                }).ok();
+
+                            // автоответчик: один раз на чат, не отвечаем на свои же автоответы
+                            let auto = AUTO_REPLY.lock().unwrap().clone();
+                            if let Some(auto) = auto {
+                                let chat_id = m.chat().id();
+                                let replied = REPLIED.get_or_init(|| Mutex::new(HashSet::new()));
+                                let mut set = replied.lock().unwrap();
+                                let text = m.text().unwrap_or_default();
+                                if !set.contains(&chat_id) && text != auto {
+                                    set.insert(chat_id);
+                                    let _ = m.reply(&auto).await;
+                                }
+                            }
+                        }
+                        Update::DeletedMessages(d) => {
+                            let line = format!("[УДАЛЕНО] {:?}\n", d.messages);
+                            tokio::fs::OpenOptions::new()
+                                .create(true).append(true)
+                                .open("archive.log").await
+                                .and_then(|mut f| {
+                                    use tokio::io::AsyncWriteExt;
+                                    Ok(f.write_all(line.as_bytes()).await?)
+                                }).ok();
+                        }
+                        _ => {}
+                    }
                 }
             }
         });
